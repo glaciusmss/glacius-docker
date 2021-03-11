@@ -125,11 +125,11 @@ services:
   glacius-web:
     image: ${REGISTRY_URL}/glacius/glacius-web:latest
     build:
-      context: ../glacius-web-vue
+      context: ../glacius-web
       dockerfile: ./docker/Dockerfile
     container_name: glacius-web
     volumes:
-      - ../glacius-web-vue:/var/www/html:delegated
+      - ../glacius-web:/var/www/html:delegated
       - /var/www/html/tests
     networks:
       glaciusnetwork:

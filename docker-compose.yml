@@ -1,0 +1,198 @@
+version: "3.5"
+
+services:
+
+  glacius-db:
+    image: mariadb
+    restart: always
+    container_name: glacius-db
+    volumes:
+      - ./dockerfile/mariadb:/var/lib/mysql:delegated
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: glacius
+    networks:
+      glaciusnetwork:
+
+  glacius-redis:
+    image: redis
+    container_name: glacius-redis
+    ports:
+      - "6385:6379"
+    networks:
+      glaciusnetwork:
+
+  glacius-es-node-1:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.9.1
+    container_name: glacius-es-node-1
+    environment:
+      - node.name=glacius-es-node-1
+      - cluster.name=glacius-es-cluster
+      - discovery.seed_hosts=glacius-es-node-2
+      - cluster.initial_master_nodes=glacius-es-node-1,glacius-es-node-2
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms128m -Xmx128m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1  
+    ports:
+      - "9200:9200"
+    volumes:
+      - ../glacius-es/data01:/usr/share/elasticsearch/data:delegated
+    networks:
+      glaciusnetwork:
+
+  glacius-es-node-2:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.9.1
+    container_name: glacius-es-node-2
+    environment:
+      - node.name=glacius-es-node-2
+      - cluster.name=glacius-es-cluster
+      - discovery.seed_hosts=glacius-es-node-1
+      - cluster.initial_master_nodes=glacius-es-node-1,glacius-es-node-2
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms128m -Xmx128m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1  
+    volumes:
+      - ../glacius-es/data02:/usr/share/elasticsearch/data:delegated
+    networks:
+      glaciusnetwork:
+
+  glacius-es-admin:
+    image: elastichq/elasticsearch-hq
+    container_name: glacius-es-admin
+    networks:
+      glaciusnetwork:
+    depends_on:
+      - glacius-es-node-1
+      - glacius-es-node-2    
+
+  glacius-core:
+    image: ${REGISTRY_URL}/glacius/glacius-core:latest
+    build:
+      context: ../glacius-core
+      dockerfile: ./docker/Dockerfile
+    container_name: glacius-core
+    volumes:
+      - ../glacius-core/docker.env:/var/www/html/.env:delegated
+      - ../glacius-core/storage/app/public:/var/www/html/public/storage:delegated
+      - ../glacius-core:/var/www/html:delegated
+#      - /var/www/html/storage/logs
+    networks:
+      glaciusnetwork:
+    depends_on:
+      - glacius-es-admin
+      - glacius-db
+      - glacius-redis
+    environment:
+      CONTAINER_ROLE: app
+
+  glacius-cron:
+    image: ${REGISTRY_URL}/glacius/glacius-core:latest
+    container_name: glacius-cron
+    volumes:
+      - /var/www/html
+      - ../glacius-core/app:/var/www/html/app:delegated
+      - ../glacius-core/config:/var/www/html/config:delegated
+      - ../glacius-core/routes:/var/www/html/routes:delegated
+      - ../glacius-core/docker.env:/var/www/html/.env:delegated
+    networks:
+      glaciusnetwork:
+    depends_on:
+      - glacius-db
+      - glacius-redis
+    environment:
+      CONTAINER_ROLE: scheduler
+
+  glacius-websocket:
+    image: ${REGISTRY_URL}/glacius/glacius-core:latest
+    container_name: glacius-websocket
+    ports:
+      - "6001:6001"
+    volumes:
+      - /var/www/html
+    networks:
+      glaciusnetwork:
+    environment:
+      CONTAINER_ROLE: websocket
+
+  glacius-web:
+    image: ${REGISTRY_URL}/glacius/glacius-web:latest
+    build:
+      context: ../glacius-web-vue
+      dockerfile: ./docker/Dockerfile
+    container_name: glacius-web
+    volumes:
+      - ../glacius-web-vue:/var/www/html:delegated
+      - /var/www/html/tests
+    networks:
+      glaciusnetwork:
+
+  # For reverse proxy the services.
+  glacius-server:
+    image: ${REGISTRY_URL}/glacius/glacius-server:latest
+    build:
+      context: dockerfile/nginx
+      dockerfile: Dockerfile
+    container_name: glacius-server
+    ports:
+      - "9999:80"
+    networks:
+      glaciusnetwork:
+        aliases:
+          - nginx
+          - glacius-core.test
+          - glacius-web.test
+          - glacius-es-admin.test
+    depends_on:
+      - glacius-core
+      - glacius-web
+      - glacius-es-admin
+
+  localtunnel:
+    image: efrecon/localtunnel
+    container_name: localtunnel
+    restart: always
+    command:
+      --local-host glacius-core --port 8888 --host ${LOCAL_TUNNEL_HOST} --subdomain glacius-core
+    depends_on:
+      - glacius-core
+    networks:
+      - glaciusnetwork
+
+  localtunnel-websocket:
+    image: efrecon/localtunnel
+    container_name: localtunnel-websocket
+    restart: always
+    command:
+      --local-host glacius-core --port 6001 --host ${LOCAL_TUNNEL_HOST} --subdomain glacius-websocket
+    depends_on:
+      - glacius-websocket
+    networks:
+      - glaciusnetwork    
+
+
+  # ngrok:
+  #   container_name: ngrok
+  #   ports:
+  #     - "4040:4040"
+  #   image: wernight/ngrok
+  #   environment:
+  #     - NGROK_AUTH=4vZqaTrEUVwrZ12VrekT_5ya5vWCAhHyhs3avZwnFY
+  #     - NGROK_REGION=ap
+  #     - NGROK_PORT=glacius-server:80
+  #   depends_on:
+  #     - glacius-server
+  #   networks:
+  #     - glaciusnetwork 
+
+networks:
+  glaciusnetwork:
+    driver: bridge
+    name: glaciusnetwork
